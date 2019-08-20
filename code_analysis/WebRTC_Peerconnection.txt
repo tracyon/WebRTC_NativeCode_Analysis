@@ -1,0 +1,123 @@
+DispatchMessage(&msg) -- main.cc:170
+  |-> WndProc()  --main_wnd.cc : 404
+    |-> MainWnd::OnMessage()
+      |-> MainWnd::OnDefaultAction()
+        |-> Conductor::StartLogin(const std::string& server, int port)
+          |-> PeerConnectionClient::Connect(const std::string& server, int port, const std::string& client_name)
+            |-> resolver_->SignalDone.connect(this, &PeerConnectionClient::OnResolveResult)
+            |-> resolver_->Start(server_address_)
+              |-> SignalThread::Start()
+                |-> worker_.Start() -> Thread::Start(Runnable* runnable)
+                  |-> thread_ = CreateThread(nullptr, 0, PreRun, init, 0, &thread_id_);
+
+PreRun()
+  |-> init->thread->Run(); --> SignalThread::Worker::Worker(SignalThread* parent)
+    |-> SignalThread::Run()
+      |-> DoWork(); --> AsyncResolver::DoWork() 
+        |-> ResolveHostname(addr_.hostname().c_str(), addr_.family(), &addresses_);
+      |-> main_->Post(RTC_FROM_HERE, this, ST_MSG_WORKER_DONE); --> rtc::Win32Thread w32_thread(&w32_ss); w32_thread->Post() -> Thread->Post() -> MessageQueue->Post()
+        |-> WakeUpSocketServer();
+          |-> ss_->WakeUp(); --> Win32SocketServer::WakeUp()
+            |-> PostMessage(wnd_.handle(), s_wm_wakeup_id, 0, 0);
+
+Conductor::ConnectToPeer(int peer_id)
+  |-> InitializePeerConnection()
+    |-> peer_connection_factory_ = webrtc::CreatePeerConnectionFactory()
+      |-> std::unique_ptr<cricket::MediaEngineInterface> media_engine(cricket::WebRtcMediaEngineFactory::Create());
+        |-> new CompositeMediaEngine<WebRtcVoiceEngine, VideoEngine>(std::forward_as_tuple(adm, audio_encoder_factory,
+                                                                     audio_decoder_factory, audio_mixer,
+                                                                     audio_processing),
+                                                                     std::move(video_args))) //返回的MediaEngineInterface*， CompositeMediaEngine继承MediaEngineInterface
+          |-> WebRtcVoiceEngine(webrtc::AudioDeviceModule* adm,
+                                const rtc::scoped_refptr<webrtc::AudioEncoderFactory>& encoder_factory,
+                                const rtc::scoped_refptr<webrtc::AudioDecoderFactory>& decoder_factory,
+                                rtc::scoped_refptr<webrtc::AudioMixer> audio_mixer,
+                                rtc::scoped_refptr<webrtc::AudioProcessing> audio_processing); 
+          |-> WebRtcVideoEngine(std::unique_ptr<webrtc::VideoEncoderFactory> video_encoder_factory,
+                                std::unique_ptr<webrtc::VideoDecoderFactory> video_decoder_factory,
+                                std::unique_ptr<webrtc::VideoBitrateAllocatorFactory> video_bitrate_allocator_factory);
+    |-> std::unique_ptr<CallFactoryInterface> call_factory = CreateCallFactory();
+    |-> std::unique_ptr<RtcEventLogFactoryInterface> event_log_factory = CreateRtcEventLogFactory();
+    |-> CreateModularPeerConnectionFactory(network_thread, worker_thread, signaling_thread, std::move(media_engine),std::move(call_factory), std::move(event_log_factory)); //返回PeerConnectionFactoryInterface*
+      |-> rtc::scoped_refptr<PeerConnectionFactory> pc_factory(new rtc::RefCountedObject<PeerConnectionFactory>(std::move(dependencies)));      
+      |-> MethodCall0<PeerConnectionFactory, bool> call(pc_factory.get(), &PeerConnectionFactory::Initialize);
+          bool result = call.Marshal(RTC_FROM_HERE, pc_factory->signaling_thread());      
+          |-> bool PeerConnectionFactory::Initialize();
+            |-> default_network_manager_.reset(new rtc::BasicNetworkManager());
+            |-> default_socket_factory_.reset(new rtc::BasicPacketSocketFactory(network_thread_));
+            |-> channel_manager_ = absl::make_unique<cricket::ChannelManager>(std::move(media_engine_), absl::make_unique<cricket::RtpDataEngine>(),worker_thread_, network_thread_);
+            |-> channel_manager_->Init()
+              |-> network_thread_->Invoke<void>(RTC_FROM_HERE, [&] { network_thread_->SetAllowBlockingCalls(false); });
+              |-> initialized_ = worker_thread_->Invoke<bool>(RTC_FROM_HERE, [&] { return media_engine_->Init(); });
+                |-> voice().Init(); -----> void WebRtcVoiceEngine::Init()
+                  |-> low_priority_worker_queue_.reset(new rtc::TaskQueue("rtc-low-prio", rtc::TaskQueue::Priority::LOW));
+                  |-> send_codecs_ = CollectCodecs(encoder_factory_->GetSupportedEncoders());
+                  |-> adm_ = webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::kPlatformDefaultAudio);
+                  |-> webrtc::adm_helpers::Init(adm());
+                    |-> adm->Init();
+                    |-> adm->SetPlayoutDevice(AUDIO_DEVICE_ID)
+                    |-> adm->InitSpeaker()
+                    |-> adm->StereoPlayoutIsAvailable(&available)
+                    |-> adm->SetStereoPlayout(available)
+                    |-> adm->SetRecordingDevice(AUDIO_DEVICE_ID)
+                    |-> adm->InitMicrophone()
+                    |-> adm->StereoRecordingIsAvailable(&available)
+                    |-> adm->SetStereoRecording(available)
+                  |-> webrtc::apm_helpers::Init(apm());
+                    |-> AGC音量大小： 0 - 255
+                  |-> webrtc::AudioMixerImpl::Create();
+                  |-> webrtc::AudioState::Create(config);
+                  |-> adm()->RegisterAudioCallback(audio_state()->audio_transport());
+      |-> return PeerConnectionFactoryProxy::Create(pc_factory->signaling_thread(),pc_factory);
+    |-> CreatePeerConnection(dtls=true)  
+      |-> peer_connection_ = peer_connection_factory_->CreatePeerConnection(config, nullptr, nullptr, this);
+        |-> dependencies.cert_generator = absl::make_unique<rtc::RTCCertificateGenerator>(signaling_thread_, network_thread_);
+        |-> network_thread_->Invoke<void>(RTC_FROM_HERE, [this, &configuration,&dependencies]() {
+                             dependencies.allocator = absl::make_unique<cricket::BasicPortAllocator>(default_network_manager_.get(), default_socket_factory_.get(),configuration.turn_customizer);});
+          |-> default_relay_port_factory_.reset(new TurnPortFactory());  //relay_port_factory_ = default_relay_port_factory_.get();
+          |-> SetConfiguration(ServerAddresses(), std::vector<RelayServerConfig>(), 0, false, customizer); //PortAllocator::SetConfiguration
+            |-> PortAllocatorSession* pooled_session = CreateSessionInternal("", 0, iceCredentials.ufrag, iceCredentials.pwd); //pooled_session -> BasicPortAllocatorSession
+            |-> pooled_session->StartGettingPorts();
+              |-> network_thread_->Post(RTC_FROM_HERE, this, MSG_CONFIG_START);
+                |-> BasicPortAllocatorSession::OnMessage() //case MSG_CONFIG_START
+                  |-> BasicPortAllocatorSession::GetPortConfigurations()
+                     |-> config::ICE STUN Servers, Relay servers, username, password. //PortConfiguration
+                     |-> network_thread_->Post(RTC_FROM_HERE, this, MSG_CONFIG_READY, config);
+                       |-> BasicPortAllocatorSession::OnMessage() //case MSG_CONFIG_READY
+                         |-> BasicPortAllocatorSession::OnConfigReady()
+                           |-> configs_.push_back(config);
+                           |-> network_thread_->Post(RTC_FROM_HERE, this, MSG_ALLOCATE);
+                             |-> BasicPortAllocatorSession::OnMessage() //case MSG_ALLOCATE
+                              |-> BasicPortAllocatorSession::OnAllocate()
+                                |-> DoAllocate(disable_equivalent_phases) // disable_equivalent_phases = true
+                                  |-> std::vector<rtc::Network*> networks = GetNetworks(); //拿本机的地址信息
+                                  |-> AllocationSequence* sequence = new AllocationSequence(this, networks[i], config, sequence_flags);
+                                  |-> sequence->Init();
+                                  |-> sequence->Start();
+                                    |-> session_->network_thread()->Post(RTC_FROM_HERE, this, MSG_ALLOCATION_PHASE);
+                                      |-> AllocationSequence::OnMessage() //MSG_ALLOCATION_PHASE
+                                        |-> CreateUDPPorts();
+                                        |-> CreateStunPorts();
+                                        |-> CreateRelayPorts();
+                                        |-> CreateTCPPorts();
+                                        |-> SignalPortAllocationComplete(this);
+                                          |-> BasicPortAllocatorSession::OnPortAllocationComplete()
+                                            |-> BasicPortAllocatorSession::MaybeSignalCandidatesAllocationDone()
+                                              |-> BasicPortAllocatorSession::CandidatesAllocationDone()
+                                  |-> sequences_.push_back(sequence);
+            |-> pooled_sessions_.push_back(std::unique_ptr<PortAllocatorSession>(pooled_session));
+            |-> network_thread_->Post(RTC_FROM_HERE, this, MSG_SEQUENCEOBJECTS_CREATED);
+              |-> BasicPortAllocatorSession::OnMessage(); //MSG_SEQUENCEOBJECTS_CREATED
+                |-> BasicPortAllocatorSession::OnAllocationSequenceObjectsCreated()
+                  |-> BasicPortAllocatorSession::MaybeSignalCandidatesAllocationDone()
+        |-> network_thread_->Invoke<void>(RTC_FROM_HERE, rtc::Bind(&cricket::PortAllocator::SetNetworkIgnoreMask, dependencies.allocator.get(), options_.network_ignore_mask));
+        |-> std::unique_ptr<RtcEventLog> event_log = worker_thread_->Invoke<std::unique_ptr<RtcEventLog>>(RTC_FROM_HERE, rtc::Bind(&PeerConnectionFactory::CreateRtcEventLog_w, this));
+          |-> PeerConnectionFactory::CreateRtcEventLog_w()
+            |-> event_log_factory_->CreateRtcEventLog(encoding_type)
+              |-> RtcEventLog::Create(encoding_type);
+                |-> absl::make_unique<RtcEventLogImpl>(CreateEncoder(encoding_type), std::move(task_queue));
+                  |-> absl::make_unique<RtcEventLogEncoderLegacy>();  or  absl::make_unique<RtcEventLogEncoderNewFormat>();
+        |-> std::unique_ptr<Call> call = worker_thread_->Invoke<std::unique_ptr<Call>>(RTC_FROM_HERE, rtc::Bind(&PeerConnectionFactory::CreateCall_w, this, event_log.get()));
+          |-> PeerConnectionFactory::CreateCall_w()
+            |-> CallFactory::CreateCall(const Call::Config& config)
+              |-> 
