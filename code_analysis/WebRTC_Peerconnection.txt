@@ -120,4 +120,31 @@ Conductor::ConnectToPeer(int peer_id)
         |-> std::unique_ptr<Call> call = worker_thread_->Invoke<std::unique_ptr<Call>>(RTC_FROM_HERE, rtc::Bind(&PeerConnectionFactory::CreateCall_w, this, event_log.get()));
           |-> PeerConnectionFactory::CreateCall_w()
             |-> CallFactory::CreateCall(const Call::Config& config)
-              |-> 
+              |-> new internal::Call(config, absl::make_unique<RtpTransportControllerSend>(Clock::GetRealTimeClock(), config.event_log,
+                                                                                           config.network_controller_factory, config.bitrate_config));
+        |-> rtc::scoped_refptr<PeerConnection> pc(new rtc::RefCountedObject<PeerConnection>(this, std::move(event_log), std::move(call)));
+        |-> pc->Initialize(configuration, std::move(dependencies);
+          |-> ValidateConfiguration();
+          |-> ParseIceServers(configuration.servers, &stun_servers, &turn_servers);
+          |-> network_thread()->Invoke<bool>(RTC_FROM_HERE, rtc::Bind(&PeerConnection::InitializePortAllocator_n, this, stun_servers, turn_servers, configuration))
+            |-> port_allocator_->Initialize();
+            |-> port_allocator_->SetConfiguration(stun_servers, std::move(turn_servers_copy),configuration.ice_candidate_pool_size, configuration.prune_turn_ports,
+                                                  configuration.turn_customizer, configuration.stun_candidate_keepalive_interval);
+          |-> transport_controller_.reset(new JsepTransportController(signaling_thread(), network_thread(), port_allocator_.get(),
+                                          async_resolver_factory_.get(), config));
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
+                                          
