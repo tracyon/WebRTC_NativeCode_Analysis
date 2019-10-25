@@ -1,0 +1,30 @@
+PhysicalSocketServer::PhysicalSocketServer()
+  |-> fWait_(false)
+  |-> epoll_fd_ = epoll_create(FD_SETSIZE);
+  |-> signal_wakeup_ = new Signaler(this, &fWait_); //this -> PhysicalSocketServer
+  
+AsyncSocket* PhysicalSocketServer::CreateAsyncSocket(int family, int type)
+  |-> SocketDispatcher* dispatcher = new SocketDispatcher(this);  //this -> PhysicalSocketServer
+    |-> dispatcher->Create(family, type) 
+      |-> PhysicalSocket::Create(family, type) //创建 socket
+      |-> Initialize() 设置非阻塞
+      |-> ss_->Add(this); -> PhysicalSocketServer::And(this) // this -> SocketDispatcher
+  
+PhysicalSocketServer::And(SocketDispatcher*)
+  |-> dispatchers_.insert(pdispatcher);
+  |-> AddEpoll(pdispatcher);
+    |-> event.events = GetEpollEvents(pdispatcher->GetRequestedEvents()); //DE_READ DE_ACCEPT -> EPOLLIN  DE_WRITE DE_CONNECT -> EPOLLOUT
+    |-> event.data.ptr = pdispatcher;
+    |-> epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &event);
+    
+PhysicalSocketServer::Wait(int cmsWait, bool process_io)
+  |-> WaitEpoll(cmsWait);
+    |-> epoll_wait(epoll_fd_, &epoll_events_[0], static_cast<int>(epoll_events_.size()), static_cast<int>(tvWait));
+    |-> ProcessEvents(pdispatcher, readable, writable, check_error);
+      |-> dispatcher->OnPreEvent(ff);  // SocketDispatcher::OnPreEvent(uint32_t ff)
+      |-> dispatcher->OnEvent(ff, errcode); // SocketDispatcher::OnEvent(uint32_t ff, int err)
+        |-> SignalConnectEvent(this);
+        |-> SignalReadEvent(this);
+      
+      
+  mFbBitmap = Bitmap.createBitmap(mW, mH, Bitmap.Config.ARGB_8888);

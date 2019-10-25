@@ -1,0 +1,69 @@
+发送方(Encode)调用流程
+
+1. 正常数据调用流程
+
+Thread 1: 采集线程
+WebRTCVideoSendChannelAPI::IncomingCaptureRGBAData(uint8_t* video_data,
+                                                   uint32_t timestamp,
+                                                   int64_t render_time_ms,
+                                                   VideoRotation rotation,
+                                                   int32_t width,
+                                                   int32_t height,
+                                                   const char* save_file_name = nullptr);
+
+  |-> WebRTCVideoSendChannel::PushCaptureData(VideoFrame* frame)     //这一步，将数据转换成VideoFrame格式，传入width 和 height 用于创建内存
+  |-> VideoCaptureInput::IncomingCapturedFrame(const VideoFrame& video_frame) //缓存video_frame
+
+Thread 2: 编码线程
+WebRTCVideoSendChannel::EncoderThreadFunction(void* obj)  -> WebRTCVideoSendChannel::EncoderProcess()
+  |-> WebRTCVideoSendChannel::EncodeOneFrame(int32_t* remain)
+    |-> ViEEncoder::EncodeVideoFrame(const VideoFrame& video_frame)
+      |-> VideoCodingModuleImpl::AddVideoFrame(const VideoFrame& videoFrame, const VideoContentMetrics* _contentMetrics, const CodecSpecificInfo* codecSpecificInfo)    
+        |-> VideoSender::AddVideoFrame(const VideoFrame& videoFrame, const VideoContentMetrics* contentMetrics, const CodecSpecificInfo* codecSpecificInfo)
+          |-> VCMGenericEncoder::Encode(const VideoFrame& frame, const CodecSpecificInfo* codec_specific, const std::vector<FrameType>& frame_types)
+            |-> H264EncoderImpl::Encode(const VideoFrame& frame, const CodecSpecificInfo* codec_specific_info, const std::vector<FrameType>* frame_types)
+              |-> VCMEncodedFrameCallback::Encoded(const EncodedImage& encoded_image, const CodecSpecificInfo* codec_specific, const RTPFragmentationHeader* fragmentation_header) //内存格式转换成EncodedImage
+                |-> ViEEncoder::SendData(const uint8_t payload_type, const EncodedImage& encoded_image, const RTPFragmentationHeader* fragmentation_header, const RTPVideoHeader* rtp_video_hdr)
+                  |-> PayloadRouter::RoutePayload(FrameType frame_type, int8_t payload_type, uint32_t time_stamp, int64_t capture_time_ms, const uint8_t* payload_data, size_t payload_length, const RTPFragmentationHeader* fragmentation, const RTPVideoHeader* rtp_video_hdr)
+                    |-> ModuleRtpRtcpImpl::SendOutgoingData(FrameType frame_type, int8_t payload_type, uint32_t time_stamp, int64_t capture_time_ms, const uint8_t* payload_data, size_t payload_size, const RTPFragmentationHeader* fragmentation, const RTPVideoHeader* rtp_video_hdr)
+                      |-> RTPSender::SendOutgoingData(FrameType frame_type, int8_t payload_type, uint32_t time_stamp, int64_t capture_time_ms, const uint8_t* payload_data, size_t payload_size, const RTPFragmentationHeader* fragmentation, const RTPVideoHeader* rtp_video_hdr)
+                        |-> RTPSenderAudio::SendAudio(FrameType frameType, int8_t payloadType, uint32_t captureTimeStamp, const uint8_t* payloadData, size_t payloadSize, const RTPFragmentationHeader* fragmentation)  //Audio 发送
+                        |-> RTPSenderVideo::SendVideo(const RtpVideoCodecTypes videoType, const FrameType frameType, const int8_t payloadType, const uint32_t captureTimeStamp, int64_t capture_time_ms, const uint8_t* payloadData, const size_t payloadSize, const RTPFragmentationHeader* fragmentation, const RTPVideoHeader* video_header)
+                          |-> RTPSenderVideo::SendVideoPacket(uint8_t* data_buffer, const size_t payload_length, const size_t rtp_header_length, uint16_t seq_num, const uint32_t capture_timestamp, int64_t capture_time_ms, StorageType storage, FrameType frameType)
+                            |-> RTPSender::SendToNetwork(uint8_t* data_buffer, size_t payload_length, size_t rtp_header_length, int64_t capture_time_ms, StorageType storage, RtpPacketSender::Priority priority)
+                            (Video)|-> RTPPacketHistory::PutRTPPacket(const uint8_t* packet, size_t packet_length, int64_t capture_time_ms, StorageType type)
+                                   |-> PacedSender::InsertPacket(RtpPacketSender::Priority priority, uint32_t ssrc, uint16_t sequence_number, int64_t capture_time_ms, size_t bytes, bool retransmission)
+                            (Audio)|-> RTPSender::SendPacketToNetwork(const uint8_t* packet, size_t size, const PacketOptions& options, int64_t capture_time_ms)
+                                     |-> WebRTCAudioStream::SendRtp(const uint8_t* data, size_t len, const PacketOptions& packet_options, int64_t capture_time_ms)
+                                     
+Thread 3: 平滑发送线程(Video)
+PacedSender::Process()
+  |-> PacedSender::SendPacket(const paced_sender::Packet& packet)
+    |-> PacketRouter::TimeToSendPacket(uint32_t ssrc, uint16_t sequence_number, int64_t capture_timestamp, bool retransmission)
+      |-> ModuleRtpRtcpImpl::TimeToSendPacket(uint32_t ssrc, uint16_t sequence_number, int64_t capture_time_ms, bool retransmission)
+        |-> RTPSender::TimeToSendPacket(uint16_t sequence_number, int64_t capture_time_ms, bool retransmission)
+          |-> RTPPacketHistory::GetPacketAndSetSendTime(uint16_t sequence_number, int64_t min_elapsed_time_ms, bool retransmit, uint8_t* packet, size_t* packet_length, int64_t* stored_time_ms)
+          |-> RTPSender::PrepareAndSendPacket(uint8_t* buffer, size_t length, int64_t capture_time_ms, bool send_over_rtx, bool is_retransmit)
+            |-> RTPSender::SendPacketToNetwork(const uint8_t* packet, size_t size, const PacketOptions& options, int64_t capture_time_ms)
+              |-> WebRTCVideoStream::SendRtp(const uint8_t* packet, size_t len, const PacketOptions& options, int64_t capture_time_ms)
+              
+              
+2. NACK数据调用流程
+
+Thread 1: 网络接收线程
+WebRTCVideoRecvChannelAPI::IncomingRTCP(const uint8_t* data, size_t length)
+  |-> WebRTCVideoRecvChannel::IncomingRTCP(const uint8_t* packet, size_t length)
+    |-> ViEReceiver::DeliverRtcp(const uint8_t* rtcp_packet, size_t rtcp_packet_length)
+      |-> ModuleRtpRtcpImpl::IncomingRtcpPacket(const uint8_t* incoming_packet, size_t incoming_packet_length)
+        |-> RTCPReceiver::IncomingRTCPPacket(RTCPPacketInformation& rtcpPacketInformation, RTCPUtility::RTCPParserV2* rtcpParser)
+        |-> RTCPReceiver::TriggerCallbacksFromRTCPPacket(RTCPPacketInformation& rtcpPacketInformation)
+          |-> ModuleRtpRtcpImpl::OnReceivedNACK(const std::list<uint16_t>& nack_sequence_numbers)
+            |-> RTPSender::OnReceivedNACK(const std::list<uint16_t>& nack_sequence_numbers, int64_t avg_rtt)
+              |-> RTPSender::ReSendPacket(uint16_t packet_id, int64_t min_resend_time)
+                |-> RTPPacketHistory::GetPacketAndSetSendTime(uint16_t sequence_number, int64_t min_elapsed_time_ms, bool retransmit, uint8_t* packet, size_t* packet_length, int64_t* stored_time_ms)
+                |-> PacedSender::InsertPacket(RtpPacketSender::Priority priority, uint32_t ssrc, uint16_t sequence_number, int64_t capture_time_ms, size_t bytes, bool retransmission)
+
+Thread 2: 平滑发送线程(Video) -- 同正常数据流程           
+         
+         
+         
