@@ -19,6 +19,7 @@ PreRun()
         |-> WakeUpSocketServer();
           |-> ss_->WakeUp(); --> Win32SocketServer::WakeUp()
             |-> PostMessage(wnd_.handle(), s_wm_wakeup_id, 0, 0);
+              |-> SignalThread::OnMessage(Message* msg);
 
 Conductor::ConnectToPeer(int peer_id)
   |-> InitializePeerConnection()
@@ -41,7 +42,7 @@ Conductor::ConnectToPeer(int peer_id)
     |-> CreateModularPeerConnectionFactory(network_thread, worker_thread, signaling_thread, std::move(media_engine),std::move(call_factory), std::move(event_log_factory)); //返回PeerConnectionFactoryInterface*
       |-> rtc::scoped_refptr<PeerConnectionFactory> pc_factory(new rtc::RefCountedObject<PeerConnectionFactory>(std::move(dependencies)));      
       |-> MethodCall0<PeerConnectionFactory, bool> call(pc_factory.get(), &PeerConnectionFactory::Initialize);
-          bool result = call.Marshal(RTC_FROM_HERE, pc_factory->signaling_thread());      
+          |-> bool result = call.Marshal(RTC_FROM_HERE, pc_factory->signaling_thread());      
           |-> bool PeerConnectionFactory::Initialize();
             |-> default_network_manager_.reset(new rtc::BasicNetworkManager());
             |-> default_socket_factory_.reset(new rtc::BasicPacketSocketFactory(network_thread_));
